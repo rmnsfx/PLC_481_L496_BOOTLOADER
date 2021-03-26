@@ -103,12 +103,15 @@ uint8_t status3 = 0;
 volatile uint8_t boot_transmitBuffer[8];
 volatile uint8_t boot_receiveBuffer[256];
 
-volatile uint32_t byte_size = 0;
+volatile static uint32_t byte_size = 0;
 volatile uint16_t crc_data = 0;
 volatile uint16_t byte_bunch = 0;
 volatile uint32_t byte_counter = 0;
 volatile uint16_t crc_flash = 0;
 volatile uint64_t data = 0;
+
+volatile uint16_t packet_crc = 0;	
+volatile uint16_t calculate_crc = 0;	
 
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
@@ -228,8 +231,8 @@ void MX_FREERTOS_Init(void) {
   myTask05Handle = osThreadCreate(osThread(myTask05), NULL);
 
   /* definition and creation of myTask06 */
-  osThreadDef(myTask06, Jump_Task, osPriorityNormal, 0, 128);
-  myTask06Handle = osThreadCreate(osThread(myTask06), NULL);
+  //osThreadDef(myTask06, Jump_Task, osPriorityNormal, 0, 128);
+  //myTask06Handle = osThreadCreate(osThread(myTask06), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -309,10 +312,7 @@ void Display_Task(void const * argument)
 					ssd1306_WriteString("Ошибка",font_8x15_RU,1);
 					ssd1306_SetCursor(0,15);
 					ssd1306_WriteString("CRC",font_8x14,1);				
-					
-//					ssd1306_SetCursor(30,15);				
-//					snprintf(buffer, sizeof buffer, "%d", boot_timer_counter);				
-//					ssd1306_WriteString(buffer,font_8x14,1);	
+
 					ssd1306_UpdateScreen();		
 				}
 				
@@ -325,14 +325,9 @@ void Display_Task(void const * argument)
 					ssd1306_SetCursor(0,15);				
 					ssd1306_WriteString("чик",font_8x15_RU,1);
 
-//					ssd1306_SetCursor(0,30);				
 					snprintf(buffer, sizeof buffer, " %.01f", VERSION);				
 					ssd1306_WriteString(buffer,font_8x14,1);	
-									
-					
-//					ssd1306_SetCursor(30,15);				
-//					snprintf(buffer, sizeof buffer, "%d", boot_timer_counter);				
-//					ssd1306_WriteString(buffer,font_8x14,1);	
+	
 					ssd1306_UpdateScreen();		
 				}
 				
@@ -386,14 +381,54 @@ void Modbus_Receive_Task(void const * argument)
 		__HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
 		
 		HAL_UART_DMAStop(&huart2); 
+							
 		
-		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 8);
-
-		//boot_timer_counter = 0;
+		/* 2: Команда подтверждение того, что контроллер перешел в режим загрузчика */
+		if( boot_receiveBuffer[0] == 0xAE && boot_receiveBuffer[1] == 0x3E && boot_receiveBuffer[2] == 0xFC )
+		{			
+			//xSemaphoreGive( Semaphore_Update );
+			HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3);  
+			
+			worker_status = 1;			
+		}
 		
-		xSemaphoreGive( Semaphore_Update );		
+		/* 3: Получаем размер прошивки в байтах */
+		if( boot_receiveBuffer[0] == 0xAC )
+		{				
+			calculate_crc = crc16(&boot_receiveBuffer[0], 5);
+			packet_crc = (boot_receiveBuffer[6]<<8) + boot_receiveBuffer[5];
+			
+			if( calculate_crc == packet_crc )
+			{
+				byte_size = (boot_receiveBuffer[1]<<24) + (boot_receiveBuffer[2]<<16) + (boot_receiveBuffer[3]<<8) + boot_receiveBuffer[4];
+				
+				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 7); 	
+			
+				worker_status = 2;			
+			}
+		}		
+				
+		/* 4: Получаем команду на очистку флеш */
+		if( boot_receiveBuffer[0] == 0xAF )
+		{				
+			calculate_crc = crc16(&boot_receiveBuffer[0], 1);
+			packet_crc = (boot_receiveBuffer[2]<<8) + boot_receiveBuffer[1];
+			
+			if( calculate_crc == packet_crc )
+			{		
+				
+				
+				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3); 	
+			
+				worker_status = 3;			
+			}
+		}	
 		
-    
+		
+		
+		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 16);
+		
+		//xSemaphoreGive( Semaphore_Update );		    
   }
   /* USER CODE END Modbus_Receive_Task */
 }
@@ -412,9 +447,9 @@ void Modbus_Transmit_Task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-		xSemaphoreTake( Semaphore_Modbus_Tx, portMAX_DELAY );					
-		
-    
+			xSemaphoreTake( Semaphore_Modbus_Tx, portMAX_DELAY );
+
+			HAL_UART_Transmit_DMA(&huart2, boot_transmitBuffer, 8);    
   }
   /* USER CODE END Modbus_Transmit_Task */
 }
@@ -436,6 +471,8 @@ void Update_Flash_Task(void const * argument)
   {
 		xSemaphoreTake( Semaphore_Update, portMAX_DELAY );					
 
+		
+		
 	  data = ((uint64_t) boot_receiveBuffer[0]) + 
 					((uint64_t) (boot_receiveBuffer[1]) << 8) + 
 					((uint64_t) (boot_receiveBuffer[2]) << 16) + 
@@ -445,87 +482,8 @@ void Update_Flash_Task(void const * argument)
 					((uint64_t) (boot_receiveBuffer[6]) << 48) + 
 					((uint64_t) (boot_receiveBuffer[7]) << 56);
 		
-		//Programm
-		if (worker_status == 3)
-		{			
-				status = HAL_FLASH_Unlock();							
-				//__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGSERR);
-				status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data);						
-				
-				HAL_FLASH_Lock();	
-				
-				byte_bunch++; byte_counter += 8;
-			
-				if (byte_counter >= byte_size) 
-				{
-					xSemaphoreGive( Semaphore_Jump );		
-				}
-											
-		}
-
-		//Get crc
-		if (worker_status == 2)
-		{
-		
-//				byte_size = (uint32_t) boot_receiveBuffer[0] + (boot_receiveBuffer[1] << 8) + (boot_receiveBuffer[2] << 16) + (boot_receiveBuffer[3] << 32);
-//				crc_data = (uint32_t) boot_receiveBuffer[4] + (boot_receiveBuffer[5] << 8) + (boot_receiveBuffer[6] << 16) + (boot_receiveBuffer[7] << 32);
-				
-				crc_data = data;				
-				worker_status = 3;
-				byte_counter = 0;
-				byte_bunch = 0;
-				error_crc = 0;	
-		}
-		
-		//Get size
-		if (worker_status == 1)
-		{				
-				byte_size = data >> 32;				
-				worker_status = 2;
-				byte_counter = 0;
-				byte_bunch = 0;
-				error_crc = 0;	
-		}		
-		
-		//Erase	
-		if (boot_receiveBuffer[0] == 0x04 && 
-				boot_receiveBuffer[1] == 0x08 && 
-				boot_receiveBuffer[2] == 0x01 && 
-				boot_receiveBuffer[3] == 0x00 && 
-				boot_receiveBuffer[4] == 0x00 && 
-				boot_receiveBuffer[5] == 0x00 && 
-				boot_receiveBuffer[6] == 0x00 && 
-				boot_receiveBuffer[7] == 0x00 && status == 0)
-		{		
-				worker_status = 1;
-			
-				FLASH_EraseInitTypeDef EraseInitStruct;					
-				uint32_t PAGEError = 0;
-				EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
-				EraseInitStruct.Banks = 1;
-				EraseInitStruct.Page = 32;
-				EraseInitStruct.NbPages = 40;
-			
-				status = HAL_FLASH_Unlock();	
-				osDelay(5);
-				__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGSERR);
-				
-				status = HAL_FLASHEx_Erase(&EraseInitStruct,&PAGEError);				
-				//status = HAL_FLASH_GetError();
-				
-				HAL_FLASH_Lock();				
-			
-				
-				
-		}		
-		
-		//Зажечь светодиод
-		HAL_GPIO_WritePin(GPIOC, SD2_Pin, GPIO_PIN_SET);
-		osDelay(1);
-		HAL_GPIO_WritePin(GPIOC, SD2_Pin, GPIO_PIN_RESET);		
-
-  }		   
-	
+	   
+	}
 
   
   /* USER CODE END Update_Flash_Task */
@@ -544,7 +502,7 @@ void Jump_Task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-		xSemaphoreTake( Semaphore_Jump, portMAX_DELAY );
+					xSemaphoreTake( Semaphore_Jump, portMAX_DELAY );
     				
 					crc_flash = flash_crc16(APP_START_ADDRESS, byte_size);
 					
@@ -607,6 +565,8 @@ void JumpToApplication(uint32_t ADDRESS)
 		SCB->VTOR = ADDRESS;
 		Jump();		 
 }     
+
 /* USER CODE END Application */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
+

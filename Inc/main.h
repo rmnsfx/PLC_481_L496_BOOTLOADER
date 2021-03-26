@@ -94,7 +94,7 @@
 /* #define USE_FULL_ASSERT    1U */
 
 /* USER CODE BEGIN Private defines */
-#define VERSION 4.4
+#define VERSION 4.5
 
 #define BOOT_START_ADDRESS 0x8004000
 //page 6 (0x3000)
