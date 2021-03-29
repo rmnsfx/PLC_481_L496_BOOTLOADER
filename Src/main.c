@@ -65,7 +65,7 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-
+extern uint8_t boot_receiveBuffer[256];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -128,6 +128,7 @@ int main(void)
 	__HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
 	__HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
 	
+	HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 256);
 	//__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
   /* USER CODE END 2 */
 

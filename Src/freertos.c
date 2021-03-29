@@ -112,7 +112,8 @@ volatile uint64_t data = 0;
 
 volatile uint16_t packet_crc = 0;	
 volatile uint16_t calculate_crc = 0;	
-
+volatile uint8_t packet_size = 0;
+	
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId myTask01Handle;
@@ -379,15 +380,14 @@ void Modbus_Receive_Task(void const * argument)
 						
 		__HAL_UART_CLEAR_IT(&huart2, UART_CLEAR_IDLEF); 				
 		__HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
+		HAL_UART_DMAStop(&huart2);
 		
-		HAL_UART_DMAStop(&huart2); 
 							
 		
 		/* 2: Команда подтверждение того, что контроллер перешел в режим загрузчика */
 		if( boot_receiveBuffer[0] == 0xAE && boot_receiveBuffer[1] == 0x3E && boot_receiveBuffer[2] == 0xFC )
 		{			
-			//xSemaphoreGive( Semaphore_Update );
-			HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3);  
+			HAL_UART_Transmit(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3, 500);  
 			
 			worker_status = 1;			
 		}
@@ -415,8 +415,7 @@ void Modbus_Receive_Task(void const * argument)
 			packet_crc = (boot_receiveBuffer[2]<<8) + boot_receiveBuffer[1];
 			
 			if( calculate_crc == packet_crc )
-			{		
-				
+			{			
 				
 				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3); 	
 			
@@ -425,8 +424,39 @@ void Modbus_Receive_Task(void const * argument)
 		}	
 		
 		
+		/* 5: Получаем данные прошивки */
+		if( worker_status == 3 )
+		{
+			/*  Размер пакета без CRC */
+			packet_size = boot_receiveBuffer[0];
+			
+			calculate_crc = crc16((uint8_t*)&boot_receiveBuffer[0], packet_size+1);
+			packet_crc = (boot_receiveBuffer[packet_size + 2]<<8) + boot_receiveBuffer[packet_size + 1];
+			
+			if( calculate_crc == packet_crc )
+			{			
+				
+				/* Если пакет целый высылаем подтверждение */
+				boot_receiveBuffer[0] = 0xAE;
+				boot_receiveBuffer[1] = 0x3E;
+				boot_receiveBuffer[2] = 0xFC;
+				
+				xSemaphoreGive( Semaphore_Update );
+				
+				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3); 			
+				
+			}
+			else
+			{
+				/* Если пакет битый просим повторить */
+				
+				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) 0xFF, 1); 
+			}
+			
+		}		
 		
-		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 16);
+		 
+		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 255);
 		
 		//xSemaphoreGive( Semaphore_Update );		    
   }
