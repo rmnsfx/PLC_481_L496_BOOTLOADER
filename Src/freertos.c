@@ -115,6 +115,7 @@ volatile uint16_t calculate_crc = 0;
 volatile uint8_t packet_size = 0;
 volatile static uint8_t flash_byte_counter = 0;
 volatile uint8_t data_from_modbus[255];
+volatile uint16_t remain = 0;
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId myTask01Handle;
@@ -423,8 +424,8 @@ void Modbus_Receive_Task(void const * argument)
 				uint32_t PAGEError = 0;
 				EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
 				EraseInitStruct.Banks = 1;
-				EraseInitStruct.Page = 32;
-				EraseInitStruct.NbPages = 40;			
+				EraseInitStruct.Page = 32; /* 0x8010000 */
+				EraseInitStruct.NbPages = 65;	/* 65 * 2000 = 130000 байт */		
 				status = HAL_FLASH_Unlock();	
 				vTaskDelay(5);
 				//osDelay(5);
@@ -465,34 +466,36 @@ void Modbus_Receive_Task(void const * argument)
 						}
 						
 						
-						data_to_flash = 0x0;
 						
+						/* Программируем флеш */													
 						
-						/* Программируем флеш с идентификацией крайнего пакета */										
-						//if( packet_size % 8 == 0 )
-						{
-								for(uint16_t i = 0; i < packet_size; i+=8)
-								{														
-										
-										data_to_flash = ((uint64_t) data_from_modbus[i + 0]) + 
-										((uint64_t) (data_from_modbus[i + 1]) << 8) + 
-										((uint64_t) (data_from_modbus[i + 2]) << 16) + 
-										((uint64_t) (data_from_modbus[i + 3]) << 24) + 
-										((uint64_t) (data_from_modbus[i + 4]) << 32) + 
-										((uint64_t) (data_from_modbus[i + 5]) << 40) + 
-										((uint64_t) (data_from_modbus[i + 6]) << 48) + 
-										((uint64_t) (data_from_modbus[i + 7]) << 56);							
-						
-												
+						for(uint16_t i = 0; i < packet_size; i+=8)
+						{								
+								data_to_flash = 0x00;//0xFFFFFFFFFFFFFFFF;
 								
-										HAL_FLASH_Unlock();							
-										status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data_to_flash);										
-										HAL_FLASH_Lock();							
-										 
-										byte_counter += 8;	
-										byte_bunch++;																				
-								}														
-						}
+								if( byte_size - byte_counter < 8 ) remain = byte_size - byte_counter;
+								else remain = 8;							
+							
+								for(uint16_t y = 0; y < 8; y++)
+								{										
+										if( y >= remain ) 
+										{
+												data_to_flash += ((uint64_t) 0xFF) << y*8;													
+										}
+										else
+										{
+												data_to_flash += ((uint64_t) data_from_modbus[i + y]) << y*8;													
+										}
+								}
+						
+								HAL_FLASH_Unlock();							
+								status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data_to_flash);										
+								HAL_FLASH_Lock();							
+								 
+								byte_counter += 8;	
+								byte_bunch++;																				
+						}														
+						
 
 						
 						/* Если все хорошо высылаем подтверждение */
