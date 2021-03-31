@@ -82,7 +82,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-xSemaphoreHandle 	Semaphore_Modbus_Rx, Semaphore_Modbus_Tx, Semaphore_Update, Semaphore_Jump;
+xSemaphoreHandle 	Semaphore_Modbus_Rx, Semaphore_Modbus_Tx, Semaphore_Update, Semaphore_Jump, Semaphore_Сonfirm_Update;
 
 extern FontDef font_7x12_RU;
 extern FontDef font_7x12;
@@ -92,7 +92,7 @@ extern FontDef font_5x10_RU;
 extern FontDef font_5x10;
 
 uint8_t error_crc = 0;
-uint8_t worker_status = 0;
+volatile static uint8_t worker_status = 0;
 uint8_t status = 0;
 
 uint8_t status1 = 0;
@@ -108,12 +108,13 @@ volatile uint16_t crc_data = 0;
 volatile uint16_t byte_bunch = 0;
 volatile uint32_t byte_counter = 0;
 volatile uint16_t crc_flash = 0;
-volatile uint64_t data = 0;
+volatile uint64_t data_to_flash = 0;
 
 volatile uint16_t packet_crc = 0;	
 volatile uint16_t calculate_crc = 0;	
 volatile uint8_t packet_size = 0;
-	
+volatile static uint8_t flash_byte_counter = 0;
+volatile uint8_t data_from_modbus[255];
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId myTask01Handle;
@@ -200,6 +201,7 @@ void MX_FREERTOS_Init(void) {
 		vSemaphoreCreateBinary(Semaphore_Modbus_Tx);
 		vSemaphoreCreateBinary(Semaphore_Update);
 		vSemaphoreCreateBinary(Semaphore_Jump);
+		vSemaphoreCreateBinary(Semaphore_Сonfirm_Update);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -393,7 +395,7 @@ void Modbus_Receive_Task(void const * argument)
 		}
 		
 		/* 3: Получаем размер прошивки в байтах */
-		if( boot_receiveBuffer[0] == 0xAC )
+		if( boot_receiveBuffer[0] == 0xAC && worker_status == 1)
 		{				
 			calculate_crc = crc16(&boot_receiveBuffer[0], 5);
 			packet_crc = (boot_receiveBuffer[6]<<8) + boot_receiveBuffer[5];
@@ -409,7 +411,7 @@ void Modbus_Receive_Task(void const * argument)
 		}		
 				
 		/* 4: Получаем команду на очистку флеш */
-		if( boot_receiveBuffer[0] == 0xAF )
+		if( boot_receiveBuffer[0] == 0xAF && worker_status == 2)
 		{				
 			calculate_crc = crc16(&boot_receiveBuffer[0], 1);
 			packet_crc = (boot_receiveBuffer[2]<<8) + boot_receiveBuffer[1];
@@ -417,9 +419,29 @@ void Modbus_Receive_Task(void const * argument)
 			if( calculate_crc == packet_crc )
 			{			
 				
+				FLASH_EraseInitTypeDef EraseInitStruct;					
+				uint32_t PAGEError = 0;
+				EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+				EraseInitStruct.Banks = 1;
+				EraseInitStruct.Page = 32;
+				EraseInitStruct.NbPages = 40;			
+				status = HAL_FLASH_Unlock();	
+				vTaskDelay(5);
+				//osDelay(5);
+				__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGSERR);				
+				status = HAL_FLASHEx_Erase(&EraseInitStruct,&PAGEError);				
+				//status = HAL_FLASH_GetError();				
+				HAL_FLASH_Lock();				
+				
+				
 				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3); 	
 			
 				worker_status = 3;			
+				
+				byte_bunch = 0;
+				byte_counter = 0;
+				
+				
 			}
 		}	
 		
@@ -427,34 +449,73 @@ void Modbus_Receive_Task(void const * argument)
 		/* 5: Получаем данные прошивки */
 		if( worker_status == 3 )
 		{
-			/*  Размер пакета без CRC */
-			packet_size = boot_receiveBuffer[0];
-			
-			calculate_crc = crc16((uint8_t*)&boot_receiveBuffer[0], packet_size+1);
-			packet_crc = (boot_receiveBuffer[packet_size + 2]<<8) + boot_receiveBuffer[packet_size + 1];
-			
-			if( calculate_crc == packet_crc )
-			{			
+				/* Размер пакета без CRC */
+				packet_size = boot_receiveBuffer[0];
 				
-				/* Если пакет целый высылаем подтверждение */
-				boot_receiveBuffer[0] = 0xAE;
-				boot_receiveBuffer[1] = 0x3E;
-				boot_receiveBuffer[2] = 0xFC;
+				calculate_crc = crc16((uint8_t*)&boot_receiveBuffer[0], packet_size+1);
+				packet_crc = (boot_receiveBuffer[packet_size + 2]<<8) + boot_receiveBuffer[packet_size + 1];
 				
-				xSemaphoreGive( Semaphore_Update );
-				
-				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3); 			
-				
-			}
-			else
-			{
-				/* Если пакет битый просим повторить */
-				
-				HAL_UART_Transmit_DMA(&huart2, (uint8_t *) 0xFF, 1); 
-			}
-			
+				if( calculate_crc == packet_crc )
+				{				
+						
+						/* Перекладываем из модбас пакета в буффер для записи, чистим данные от crc и размера */
+						for(int i = 0; i < packet_size; i++)
+						{
+							data_from_modbus[i] = boot_receiveBuffer[i+1];
+						}
+						
+						
+						data_to_flash = 0x0;
+						
+						
+						/* Программируем флеш с идентификацией крайнего пакета */										
+						//if( packet_size % 8 == 0 )
+						{
+								for(uint16_t i = 0; i < packet_size; i+=8)
+								{														
+										
+										data_to_flash = ((uint64_t) data_from_modbus[i + 0]) + 
+										((uint64_t) (data_from_modbus[i + 1]) << 8) + 
+										((uint64_t) (data_from_modbus[i + 2]) << 16) + 
+										((uint64_t) (data_from_modbus[i + 3]) << 24) + 
+										((uint64_t) (data_from_modbus[i + 4]) << 32) + 
+										((uint64_t) (data_from_modbus[i + 5]) << 40) + 
+										((uint64_t) (data_from_modbus[i + 6]) << 48) + 
+										((uint64_t) (data_from_modbus[i + 7]) << 56);							
+						
+												
+								
+										HAL_FLASH_Unlock();							
+										status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data_to_flash);										
+										HAL_FLASH_Lock();							
+										 
+										byte_counter += 8;	
+										byte_bunch++;																				
+								}														
+						}
+
+						
+						/* Если все хорошо высылаем подтверждение */
+						boot_transmitBuffer[0] = 0xAE;
+						boot_transmitBuffer[1] = 0x3E;
+						boot_transmitBuffer[2] = 0xFC;
+						HAL_UART_Transmit_DMA(&huart2, (uint8_t *) &boot_transmitBuffer[0], 3); 						
+						
+						
+						if (byte_counter >= byte_size) 
+						{
+								worker_status = 4;
+								vTaskDelay(1000);
+								JumpToApplication(APP_START_ADDRESS);											
+								
+						}	
+				}
+				else
+				{
+						/* Если пакет битый просим повторить */				
+						HAL_UART_Transmit_DMA(&huart2, (uint8_t *) 0xFF, 1); 
+				}			
 		}		
-		
 		 
 		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 255);
 		
@@ -494,25 +555,50 @@ void Modbus_Transmit_Task(void const * argument)
 void Update_Flash_Task(void const * argument)
 {
   /* USER CODE BEGIN Update_Flash_Task */
-	
+
 	
   /* Infinite loop */
   for(;;)
   {
 		xSemaphoreTake( Semaphore_Update, portMAX_DELAY );					
 
-		
-		
-	  data = ((uint64_t) boot_receiveBuffer[0]) + 
-					((uint64_t) (boot_receiveBuffer[1]) << 8) + 
-					((uint64_t) (boot_receiveBuffer[2]) << 16) + 
-					((uint64_t) (boot_receiveBuffer[3]) << 24) + 
-					((uint64_t) (boot_receiveBuffer[4]) << 32) + 
-					((uint64_t) (boot_receiveBuffer[5]) << 40) + 
-					((uint64_t) (boot_receiveBuffer[6]) << 48) + 
-					((uint64_t) (boot_receiveBuffer[7]) << 56);
-		
-	   
+		if( worker_status == 3 )
+		{
+				/* Перекладываем из модбас пакета в локальный буффер, для очистки */
+				for(uint16_t i = 0; i < byte_size; i++)
+				{
+					//data_from_modbus[i] = boot_receiveBuffer[i];
+				}
+//				
+//				/* Программируем флеш */
+//				//HAL_FLASH_Unlock();
+//				for(uint16_t i = 0; i < byte_size-1; i++)
+//				{
+//						data = ((uint64_t) data_from_modbus[i*8 + 0]) + 
+//							((uint64_t) (data_from_modbus[i*8 + 1]) << 8) + 
+//							((uint64_t) (data_from_modbus[i*8 + 2]) << 16) + 
+//							((uint64_t) (data_from_modbus[i*8 + 3]) << 24) + 
+//							((uint64_t) (data_from_modbus[i*8 + 4]) << 32) + 
+//							((uint64_t) (data_from_modbus[i*8 + 5]) << 40) + 
+//							((uint64_t) (data_from_modbus[i*8 + 6]) << 48) + 
+//							((uint64_t) (data_from_modbus[i*8 + 7]) << 56);
+//					
+//																			
+//							//status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data);										
+//							
+//						
+//							//byte_bunch++; byte_counter += 8;
+//					
+//							if (byte_counter >= byte_size) 
+//							{
+//								//xSemaphoreGive( Semaphore_Jump );		
+//							}			
+//				}
+//				//HAL_FLASH_Lock();	
+				
+				/* Отправляем подтверждение */
+				// xSemaphoreGive(Semaphore_Сonfirm_Update);
+		}
 	}
 
   
