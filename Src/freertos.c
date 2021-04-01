@@ -116,6 +116,8 @@ volatile uint8_t packet_size = 0;
 volatile static uint8_t flash_byte_counter = 0;
 volatile uint8_t data_from_modbus[255];
 volatile uint16_t remain = 0;
+
+volatile uint16_t test_counter = 0;
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId myTask01Handle;
@@ -231,12 +233,12 @@ void MX_FREERTOS_Init(void) {
   myTask04Handle = osThreadCreate(osThread(myTask04), NULL);
 
   /* definition and creation of myTask05 */
-  osThreadDef(myTask05, Update_Flash_Task, osPriorityNormal, 0, 128);
-  myTask05Handle = osThreadCreate(osThread(myTask05), NULL);
+  //osThreadDef(myTask05, Update_Flash_Task, osPriorityNormal, 0, 128);
+  //myTask05Handle = osThreadCreate(osThread(myTask05), NULL);
 
   /* definition and creation of myTask06 */
-  //osThreadDef(myTask06, Jump_Task, osPriorityNormal, 0, 128);
-  //myTask06Handle = osThreadCreate(osThread(myTask06), NULL);
+  osThreadDef(myTask06, Jump_Task, osPriorityNormal, 0, 128);
+  myTask06Handle = osThreadCreate(osThread(myTask06), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -335,7 +337,7 @@ void Display_Task(void const * argument)
 					ssd1306_UpdateScreen();		
 				}
 				
-				if (worker_status == 1 || worker_status == 2 || worker_status == 3)
+				if (worker_status == 1)
 				{
 					ssd1306_Fill(0);
 					ssd1306_SetCursor(0,0);
@@ -350,6 +352,37 @@ void Display_Task(void const * argument)
 					ssd1306_UpdateScreen();	
 				}
 				
+				if (worker_status == 2)
+				{
+					ssd1306_Fill(0);
+					ssd1306_SetCursor(0,0);
+					ssd1306_WriteString("Размер",font_8x15_RU,1);										
+					ssd1306_SetCursor(0,15);	
+					ssd1306_WriteString("ПО",font_8x15_RU,1);					
+					ssd1306_WriteString(":",font_8x14,1);										
+					ssd1306_SetCursor(0,30);					
+					snprintf(buffer, sizeof buffer, "%d", byte_size);				
+					ssd1306_WriteString(buffer,font_8x14,1);	
+						
+					ssd1306_UpdateScreen();	
+				}				
+				
+				if (worker_status == 3)
+				{
+					ssd1306_Fill(0);
+					ssd1306_SetCursor(0,0);
+					ssd1306_WriteString("Загруз",font_8x15_RU,1);					
+					ssd1306_WriteString("-",font_8x14,1);					
+					ssd1306_SetCursor(0,15);	
+					ssd1306_WriteString("ка ПО",font_8x15_RU,1);					
+					ssd1306_WriteString(":",font_8x14,1);					
+					ssd1306_SetCursor(0,30);	
+					snprintf(buffer, sizeof buffer, "%d %%", (byte_counter * 100) / byte_size);				
+					ssd1306_WriteString(buffer,font_8x14,1);	
+						
+					ssd1306_UpdateScreen();	
+				}					
+				
 				if (worker_status == 4)
 				{
 					ssd1306_Fill(0);
@@ -357,8 +390,23 @@ void Display_Task(void const * argument)
 					ssd1306_WriteString("УСПЕШНО",font_8x15_RU,1);										
 						
 					ssd1306_UpdateScreen();	
-				}				
+				}	
 			
+				if (worker_status == 5)
+				{
+					ssd1306_Fill(0);
+					ssd1306_SetCursor(0,0);
+					ssd1306_WriteString("Контр",font_8x15_RU,1);					
+					ssd1306_WriteString(".",font_8x14,1);					
+					ssd1306_SetCursor(0,15);	
+					ssd1306_WriteString("сумма",font_8x15_RU,1);	
+					ssd1306_WriteString(":",font_8x14,1);						
+					ssd1306_SetCursor(0,30);	
+					snprintf(buffer, sizeof buffer, "%X", crc_flash);				
+					ssd1306_WriteString(buffer,font_8x14,1);	
+						
+					ssd1306_UpdateScreen();	
+				}				
 	
 			osDelay(100);
   }
@@ -387,7 +435,7 @@ void Modbus_Receive_Task(void const * argument)
 		
 							
 		
-		/* 2: Команда подтверждение того, что контроллер перешел в режим загрузчика */
+		/* 2: Команда на подтверждение того, что контроллер перешел в режим загрузчика */
 		if( boot_receiveBuffer[0] == 0xAE && boot_receiveBuffer[1] == 0x3E && boot_receiveBuffer[2] == 0xFC )
 		{			
 			HAL_UART_Transmit(&huart2, (uint8_t *) &boot_receiveBuffer[0], 3, 500);  
@@ -440,8 +488,7 @@ void Modbus_Receive_Task(void const * argument)
 				worker_status = 3;			
 				
 				byte_bunch = 0;
-				byte_counter = 0;
-				
+				byte_counter = 0;				
 				
 			}
 		}	
@@ -455,23 +502,20 @@ void Modbus_Receive_Task(void const * argument)
 				
 				calculate_crc = crc16((uint8_t*)&boot_receiveBuffer[0], packet_size+1);
 				packet_crc = (boot_receiveBuffer[packet_size + 2]<<8) + boot_receiveBuffer[packet_size + 1];
-				
+
+			
 				if( calculate_crc == packet_crc )
-				{				
-						
+				{						
 						/* Перекладываем из модбас пакета в буффер для записи, чистим данные от crc и размера */
 						for(int i = 0; i < packet_size; i++)
 						{
 							data_from_modbus[i] = boot_receiveBuffer[i+1];
-						}
+						}						
 						
-						
-						
-						/* Программируем флеш */													
-						
+						/* Программируем флеш */						
 						for(uint16_t i = 0; i < packet_size; i+=8)
 						{								
-								data_to_flash = 0x00;//0xFFFFFFFFFFFFFFFF;
+								data_to_flash = 0x00;
 								
 								if( byte_size - byte_counter < 8 ) remain = byte_size - byte_counter;
 								else remain = 8;							
@@ -494,9 +538,7 @@ void Modbus_Receive_Task(void const * argument)
 								 
 								byte_counter += 8;	
 								byte_bunch++;																				
-						}														
-						
-
+						}																				
 						
 						/* Если все хорошо высылаем подтверждение */
 						boot_transmitBuffer[0] = 0xAE;
@@ -508,9 +550,9 @@ void Modbus_Receive_Task(void const * argument)
 						if (byte_counter >= byte_size) 
 						{
 								worker_status = 4;
-								vTaskDelay(1000);
-								JumpToApplication(APP_START_ADDRESS);											
-								
+								vTaskDelay(3000);
+								xSemaphoreGive( Semaphore_Jump );		   
+								//JumpToApplication(APP_START_ADDRESS);																			
 						}	
 				}
 				else
@@ -522,7 +564,7 @@ void Modbus_Receive_Task(void const * argument)
 		 
 		HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 255);
 		
-		//xSemaphoreGive( Semaphore_Update );		    
+		 
   }
   /* USER CODE END Modbus_Receive_Task */
 }
@@ -563,45 +605,8 @@ void Update_Flash_Task(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-		xSemaphoreTake( Semaphore_Update, portMAX_DELAY );					
+		//xSemaphoreTake( Semaphore_Update, portMAX_DELAY );					
 
-		if( worker_status == 3 )
-		{
-				/* Перекладываем из модбас пакета в локальный буффер, для очистки */
-				for(uint16_t i = 0; i < byte_size; i++)
-				{
-					//data_from_modbus[i] = boot_receiveBuffer[i];
-				}
-//				
-//				/* Программируем флеш */
-//				//HAL_FLASH_Unlock();
-//				for(uint16_t i = 0; i < byte_size-1; i++)
-//				{
-//						data = ((uint64_t) data_from_modbus[i*8 + 0]) + 
-//							((uint64_t) (data_from_modbus[i*8 + 1]) << 8) + 
-//							((uint64_t) (data_from_modbus[i*8 + 2]) << 16) + 
-//							((uint64_t) (data_from_modbus[i*8 + 3]) << 24) + 
-//							((uint64_t) (data_from_modbus[i*8 + 4]) << 32) + 
-//							((uint64_t) (data_from_modbus[i*8 + 5]) << 40) + 
-//							((uint64_t) (data_from_modbus[i*8 + 6]) << 48) + 
-//							((uint64_t) (data_from_modbus[i*8 + 7]) << 56);
-//					
-//																			
-//							//status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data);										
-//							
-//						
-//							//byte_bunch++; byte_counter += 8;
-//					
-//							if (byte_counter >= byte_size) 
-//							{
-//								//xSemaphoreGive( Semaphore_Jump );		
-//							}			
-//				}
-//				//HAL_FLASH_Lock();	
-				
-				/* Отправляем подтверждение */
-				// xSemaphoreGive(Semaphore_Сonfirm_Update);
-		}
 	}
 
   
@@ -625,7 +630,7 @@ void Jump_Task(void const * argument)
     				
 					crc_flash = flash_crc16(APP_START_ADDRESS, byte_size);
 					
-					if (crc_flash == crc_data)
+					if (worker_status == 4)
 					{
 						
 						FLASH_EraseInitTypeDef EraseInitStruct;							
@@ -641,28 +646,20 @@ void Jump_Task(void const * argument)
 						status1 = HAL_FLASHEx_Erase(&EraseInitStruct,&PAGEError);															
 						osDelay(5);
 											
-						status2 = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, APP_CRC_ADR, crc_data);																	
+						status2 = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, APP_CRC_ADR, crc_flash);																	
 						osDelay(5);
 						
 						status3 = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, APP_SIZE, byte_size);						
-						osDelay(5);					
-						
+						osDelay(5);						
 						
 						HAL_FLASH_Lock();
 						
-						worker_status = 4;
+						worker_status = 5;
 						osDelay(3000);									
 						
 						JumpToApplication(APP_START_ADDRESS);											
 					}
-					else 
-					{
-//						worker_status = 0;
-//						byte_counter = 0;
-//						byte_bunch = 0;		
-//						error_crc = 1;
-						
-					}					
+				
 					
 				
   }
