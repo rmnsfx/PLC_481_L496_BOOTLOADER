@@ -117,7 +117,7 @@ volatile static uint8_t flash_byte_counter = 0;
 volatile uint8_t data_from_modbus[255];
 volatile uint16_t remain = 0;
 
-volatile uint16_t test_counter = 0;
+volatile uint16_t error_crc_counter = 0;
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId myTask01Handle;
@@ -557,6 +557,8 @@ void Modbus_Receive_Task(void const * argument)
 				}
 				else
 				{
+						error_crc_counter ++;
+					
 						/* Если пакет битый просим повторить */				
 						HAL_UART_Transmit_DMA(&huart2, (uint8_t *) 0xFF, 1); 
 				}			
