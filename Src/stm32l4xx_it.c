@@ -39,6 +39,8 @@
 /* USER CODE BEGIN 0 */
 extern xSemaphoreHandle Semaphore_Modbus_Rx;
 extern xSemaphoreHandle Semaphore_Modbus_Tx;
+extern xSemaphoreHandle TBUS_Semaphore_Modbus_Rx;
+extern xSemaphoreHandle TBUS_Semaphore_Modbus_Tx;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -328,7 +330,24 @@ void USART2_IRQHandler(void)
 void USART3_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_IRQn 0 */
+	if( (huart3.Instance->ISR & USART_ISR_IDLE) != RESET )
+	{		
+		
+			__HAL_UART_CLEAR_IT(&huart3, UART_CLEAR_IDLEF);
+			huart3.Instance->CR1 &= ~USART_CR1_IDLEIE;
+					
+			if( TBUS_Semaphore_Modbus_Rx != NULL )
+			{
+						static signed portBASE_TYPE xHigherPriorityTaskWoken;
+						xHigherPriorityTaskWoken = pdFALSE;	
+						xSemaphoreGiveFromISR(TBUS_Semaphore_Modbus_Rx, &xHigherPriorityTaskWoken);
+						if( xHigherPriorityTaskWoken == pdTRUE )
+						{
+								portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
+						}									
+			}			
 
+	}	
   /* USER CODE END USART3_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
   /* USER CODE BEGIN USART3_IRQn 1 */

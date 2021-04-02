@@ -83,6 +83,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 xSemaphoreHandle 	Semaphore_Modbus_Rx, Semaphore_Modbus_Tx, Semaphore_Update, Semaphore_Jump, Semaphore_Сonfirm_Update;
+xSemaphoreHandle  TBUS_Semaphore_Modbus_Rx, TBUS_Semaphore_Modbus_Tx;
 
 extern FontDef font_7x12_RU;
 extern FontDef font_7x12;
@@ -99,9 +100,10 @@ uint8_t status1 = 0;
 uint8_t status2 = 0;
 uint8_t status3 = 0;
 
-
 volatile uint8_t boot_transmitBuffer[8];
 volatile uint8_t boot_receiveBuffer[256];
+volatile uint8_t TBUS_boot_transmitBuffer[8];
+volatile uint8_t TBUS_boot_receiveBuffer[256];
 
 volatile static uint32_t byte_size = 0;
 volatile uint16_t crc_data = 0;
@@ -126,6 +128,8 @@ osThreadId myTask03Handle;
 osThreadId myTask04Handle;
 osThreadId myTask05Handle;
 osThreadId myTask06Handle;
+osThreadId myTask07Handle;
+osThreadId myTask08Handle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -139,6 +143,8 @@ void Modbus_Receive_Task(void const * argument);
 void Modbus_Transmit_Task(void const * argument);
 void Update_Flash_Task(void const * argument);
 void Jump_Task(void const * argument);
+void TBUS_Modbus_Receive_Task(void const * argument);
+void TBUS_Modbus_Transmit_Task(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -205,6 +211,8 @@ void MX_FREERTOS_Init(void) {
 		vSemaphoreCreateBinary(Semaphore_Update);
 		vSemaphoreCreateBinary(Semaphore_Jump);
 		vSemaphoreCreateBinary(Semaphore_Сonfirm_Update);
+		vSemaphoreCreateBinary(TBUS_Semaphore_Modbus_Rx);
+		vSemaphoreCreateBinary(TBUS_Semaphore_Modbus_Tx);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -240,8 +248,13 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(myTask06, Jump_Task, osPriorityNormal, 0, 128);
   myTask06Handle = osThreadCreate(osThread(myTask06), NULL);
 
+
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  osThreadDef(myTask07, TBUS_Modbus_Receive_Task, osPriorityNormal, 0, 128);
+  myTask07Handle = osThreadCreate(osThread(myTask07), NULL);
+	
+	osThreadDef(myTask08, TBUS_Modbus_Transmit_Task, osPriorityNormal, 0, 128);
+  myTask08Handle = osThreadCreate(osThread(myTask07), NULL);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
@@ -591,6 +604,171 @@ void Modbus_Transmit_Task(void const * argument)
   }
   /* USER CODE END Modbus_Transmit_Task */
 }
+
+
+
+void TBUS_Modbus_Receive_Task(void const * argument)
+{
+		for(;;)
+		{
+		
+					xSemaphoreTake( TBUS_Semaphore_Modbus_Rx, portMAX_DELAY );					
+									
+					__HAL_UART_CLEAR_IT(&huart3, UART_CLEAR_IDLEF); 				
+					__HAL_UART_ENABLE_IT(&huart3, UART_IT_IDLE);
+					HAL_UART_DMAStop(&huart3);
+					
+										
+					
+					/* 2: Команда на подтверждение того, что контроллер перешел в режим загрузчика */
+					if( TBUS_boot_receiveBuffer[0] == 0xAE && TBUS_boot_receiveBuffer[1] == 0x3E && TBUS_boot_receiveBuffer[2] == 0xFC )
+					{			
+						HAL_UART_Transmit(&huart3, (uint8_t *) &TBUS_boot_receiveBuffer[0], 3, 500);  
+						
+						worker_status = 1;			
+					}
+					
+					/* 3: Получаем размер прошивки в байтах */
+					if( TBUS_boot_receiveBuffer[0] == 0xAC && worker_status == 1)
+					{				
+						calculate_crc = crc16(&TBUS_boot_receiveBuffer[0], 5);
+						packet_crc = (TBUS_boot_receiveBuffer[6]<<8) + TBUS_boot_receiveBuffer[5];
+						
+						if( calculate_crc == packet_crc )
+						{
+							byte_size = (TBUS_boot_receiveBuffer[1]<<24) + (TBUS_boot_receiveBuffer[2]<<16) + (TBUS_boot_receiveBuffer[3]<<8) + TBUS_boot_receiveBuffer[4];
+							
+							HAL_UART_Transmit_DMA(&huart3, (uint8_t *) &TBUS_boot_receiveBuffer[0], 7); 	
+						
+							worker_status = 2;			
+						}
+					}		
+							
+					/* 4: Получаем команду на очистку флеш */
+					if( TBUS_boot_receiveBuffer[0] == 0xAF && worker_status == 2)
+					{				
+						calculate_crc = crc16(&TBUS_boot_receiveBuffer[0], 1);
+						packet_crc = (TBUS_boot_receiveBuffer[2]<<8) + TBUS_boot_receiveBuffer[1];
+						
+						if( calculate_crc == packet_crc )
+						{			
+							
+							FLASH_EraseInitTypeDef EraseInitStruct;					
+							uint32_t PAGEError = 0;
+							EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+							EraseInitStruct.Banks = 1;
+							EraseInitStruct.Page = 32; /* 0x8010000 */
+							EraseInitStruct.NbPages = 65;	/* 65 * 2000 = 130000 байт */		
+							status = HAL_FLASH_Unlock();	
+							vTaskDelay(5);
+							//osDelay(5);
+							__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_PGSERR);				
+							status = HAL_FLASHEx_Erase(&EraseInitStruct,&PAGEError);				
+							//status = HAL_FLASH_GetError();				
+							HAL_FLASH_Lock();				
+							
+							
+							HAL_UART_Transmit_DMA(&huart3, (uint8_t *) &TBUS_boot_receiveBuffer[0], 3); 	
+						
+							worker_status = 3;			
+							
+							byte_bunch = 0;
+							byte_counter = 0;				
+							
+						}
+					}	
+					
+					
+					/* 5: Получаем данные прошивки */
+					if( worker_status == 3 )
+					{
+							/* Размер пакета без CRC */
+							packet_size = TBUS_boot_receiveBuffer[0];
+							
+							calculate_crc = crc16((uint8_t*)&TBUS_boot_receiveBuffer[0], packet_size+1);
+							packet_crc = (TBUS_boot_receiveBuffer[packet_size + 2]<<8) + TBUS_boot_receiveBuffer[packet_size + 1];
+
+						
+							if( calculate_crc == packet_crc )
+							{						
+									/* Перекладываем из модбас пакета в буффер для записи, чистим данные от crc и размера */
+									for(int i = 0; i < packet_size; i++)
+									{
+										data_from_modbus[i] = TBUS_boot_receiveBuffer[i+1];
+									}						
+									
+									/* Программируем флеш */						
+									for(uint16_t i = 0; i < packet_size; i+=8)
+									{								
+											data_to_flash = 0x00;
+											
+											if( byte_size - byte_counter < 8 ) remain = byte_size - byte_counter;
+											else remain = 8;							
+										
+											for(uint16_t y = 0; y < 8; y++)
+											{										
+													if( y >= remain ) 
+													{
+															data_to_flash += ((uint64_t) 0xFF) << y*8;													
+													}
+													else
+													{
+															data_to_flash += ((uint64_t) data_from_modbus[i + y]) << y*8;													
+													}
+											}
+									
+											HAL_FLASH_Unlock();							
+											status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, (APP_START_ADDRESS) + 8*byte_bunch, data_to_flash);										
+											HAL_FLASH_Lock();							
+											 
+											byte_counter += 8;	
+											byte_bunch++;																				
+									}																				
+									
+									/* Если все хорошо высылаем подтверждение */
+									TBUS_boot_transmitBuffer[0] = 0xAE;
+									TBUS_boot_transmitBuffer[1] = 0x3E;
+									TBUS_boot_transmitBuffer[2] = 0xFC;
+									HAL_UART_Transmit_DMA(&huart3, (uint8_t *) &TBUS_boot_transmitBuffer[0], 3); 						
+									
+									
+									if (byte_counter >= byte_size) 
+									{
+											worker_status = 4;
+											vTaskDelay(3000);
+											xSemaphoreGive( Semaphore_Jump );		   
+											//JumpToApplication(APP_START_ADDRESS);																			
+									}	
+							}
+							else
+							{
+									error_crc_counter ++;
+								
+									/* Если пакет битый просим повторить */				
+									HAL_UART_Transmit_DMA(&huart3, (uint8_t *) 0xFF, 1); 
+							}			
+					}		
+					 
+					HAL_UART_Receive_DMA(&huart3, TBUS_boot_receiveBuffer, 255);		
+		}
+}
+
+
+void TBUS_Modbus_Transmit_Task(void const * argument)
+{
+  
+  for(;;)
+  {
+			xSemaphoreTake( TBUS_Semaphore_Modbus_Tx, portMAX_DELAY );
+
+			HAL_UART_Transmit_DMA(&huart3, TBUS_boot_transmitBuffer, 8);    
+  }  
+}
+
+
+
+
+
 
 /* USER CODE BEGIN Header_Update_Flash_Task */
 /**
