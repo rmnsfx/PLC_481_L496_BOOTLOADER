@@ -56,6 +56,7 @@
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
+#include "stm32l4xx_hal_crc.h"
 
 /* USER CODE BEGIN Includes */
 
@@ -66,6 +67,7 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 extern uint8_t boot_receiveBuffer[256];
+extern uint8_t TBUS_boot_receiveBuffer[256];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -129,6 +131,7 @@ int main(void)
 	__HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
 	
 	HAL_UART_Receive_DMA(&huart2, boot_receiveBuffer, 256);
+	//HAL_UART_Receive_DMA(&huart3, TBUS_boot_receiveBuffer, 256);
 	//__HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
   /* USER CODE END 2 */
 
@@ -253,6 +256,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 1 */
 
   /* USER CODE END Callback 1 */
+}
+
+void HAL_CRC_MspInit(CRC_HandleTypeDef *hcrc)
+{
+   /* Тактирование CRC: */
+   __HAL_RCC_CRC_CLK_ENABLE();
 }
 
 /**
