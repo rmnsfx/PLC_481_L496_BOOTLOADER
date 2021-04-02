@@ -52,7 +52,7 @@ uint32_t read_flash(uint32_t addr)
 
 uint16_t crc16(uint8_t *adr_buffer, uint32_t byte_cnt)
 {
-	register uint16_t crc = 0xFFFF;
+	uint16_t crc = 0xFFFF;
 	static const uint16_t table[] =
 	{
 		0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
@@ -89,7 +89,7 @@ uint16_t crc16(uint8_t *adr_buffer, uint32_t byte_cnt)
 		0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 	};
 
-	register uint8_t lut;
+	uint8_t lut;
 	/* CRC Generation Function */
 	while( byte_cnt--) /* pass through message buffer */
 	{
@@ -102,7 +102,7 @@ uint16_t crc16(uint8_t *adr_buffer, uint32_t byte_cnt)
 
 uint16_t flash_crc16(uint32_t adr, uint32_t byte_cnt)
 {
-	register uint16_t crc = 0xFFFF;
+	uint16_t crc = 0xFFFF;
 	static const uint16_t table[] =
 	{
 		0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
@@ -139,7 +139,7 @@ uint16_t flash_crc16(uint32_t adr, uint32_t byte_cnt)
 		0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 	};
 
-	register uint8_t lut;
+	uint8_t lut;
 	uint8_t data;
 	//uint32_t adr = 0x08010000;
 	/* CRC Generation Function */
